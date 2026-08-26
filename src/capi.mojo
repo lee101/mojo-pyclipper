@@ -176,6 +176,165 @@ def copy_f64(src: FPtr, dst: FPtr, count: Int):
         i += 1
 
 
+def oriented_index(index: Int, n: Int, ccw: Bool) -> Int:
+    return index if ccw else n - 1 - index
+
+
+def emit_unique(dst: FPtr, count: Int, x: Float64, y: Float64, capacity: Int) -> Int:
+    if count > 0 and dst[2 * (count - 1)] == x and dst[2 * (count - 1) + 1] == y:
+        return count
+    if count >= capacity:
+        return -1
+    emit_point(dst, count, x, y)
+    return count + 1
+
+
+def point_in_convex_f64(
+    polygon: FPtr,
+    n: Int,
+    ccw: Bool,
+    x: Float64,
+    y: Float64,
+) -> Bool:
+    for edge in range(n):
+        var following = 0 if edge + 1 == n else edge + 1
+        var i = oriented_index(edge, n, ccw)
+        var j = oriented_index(following, n, ccw)
+        var cross = (polygon[2 * j] - polygon[2 * i]) * (y - polygon[2 * i + 1])
+        cross -= (polygon[2 * j + 1] - polygon[2 * i + 1]) * (x - polygon[2 * i])
+        if cross < -1.0e-12:
+            return False
+    return True
+
+
+def intersect_convex_linear(
+    subject: FPtr,
+    subject_count: Int,
+    cutter: FPtr,
+    cutter_count: Int,
+    target: FPtr,
+    capacity: Int,
+) -> Int:
+    var subject_ccw = signed_area_f64(subject, subject_count) > 0.0
+    var cutter_ccw = signed_area_f64(cutter, cutter_count) > 0.0
+    var a = 0
+    var b = 0
+    var aa = 0
+    var ba = 0
+    var inside_flag = 0
+    var first_crossing = True
+    var count = 0
+    while ((aa < subject_count) or (ba < cutter_count)) and aa < 2 * subject_count and ba < 2 * cutter_count:
+        var a_previous = subject_count - 1 if a == 0 else a - 1
+        var b_previous = cutter_count - 1 if b == 0 else b - 1
+        var ai = oriented_index(a, subject_count, subject_ccw)
+        var api = oriented_index(a_previous, subject_count, subject_ccw)
+        var bi = oriented_index(b, cutter_count, cutter_ccw)
+        var bpi = oriented_index(b_previous, cutter_count, cutter_ccw)
+        var pax = subject[2 * api]
+        var pay = subject[2 * api + 1]
+        var ax = subject[2 * ai]
+        var ay = subject[2 * ai + 1]
+        var pbx = cutter[2 * bpi]
+        var pby = cutter[2 * bpi + 1]
+        var bx = cutter[2 * bi]
+        var by = cutter[2 * bi + 1]
+        var arx = ax - pax
+        var ary = ay - pay
+        var brx = bx - pbx
+        var bry = by - pby
+        var cross_value = arx * bry - ary * brx
+        var cross = 1 if cross_value > 1.0e-12 else (-1 if cross_value < -1.0e-12 else 0)
+        var ahb_value = brx * (ay - pby) - bry * (ax - pbx)
+        var bha_value = arx * (by - pay) - ary * (bx - pax)
+        var ahb = 1 if ahb_value > 1.0e-12 else (-1 if ahb_value < -1.0e-12 else 0)
+        var bha = 1 if bha_value > 1.0e-12 else (-1 if bha_value < -1.0e-12 else 0)
+
+        if cross == 0 and ahb == 0 and bha == 0:
+            return -2
+
+        if cross != 0:
+            var dx = pbx - pax
+            var dy = pby - pay
+            var t = (dx * bry - dy * brx) / cross_value
+            var u = (dx * ary - dy * arx) / cross_value
+            if t >= -1.0e-12 and t <= 1.0 + 1.0e-12 and u >= -1.0e-12 and u <= 1.0 + 1.0e-12:
+                var ix = pax + t * arx
+                var iy = pay + t * ary
+                if first_crossing:
+                    aa = 0
+                    ba = 0
+                    first_crossing = False
+                count = emit_unique(target, count, ix, iy, capacity)
+                if count < 0:
+                    return -1
+                if ahb > 0:
+                    inside_flag = 1
+                elif bha > 0:
+                    inside_flag = 2
+
+        if cross == 0 and ahb < 0 and bha < 0:
+            return 0
+        if cross >= 0:
+            if bha > 0:
+                if inside_flag == 1:
+                    count = emit_unique(target, count, ax, ay, capacity)
+                    if count < 0:
+                        return -1
+                a = 0 if a + 1 == subject_count else a + 1
+                aa += 1
+            else:
+                if inside_flag == 2:
+                    count = emit_unique(target, count, bx, by, capacity)
+                    if count < 0:
+                        return -1
+                b = 0 if b + 1 == cutter_count else b + 1
+                ba += 1
+        else:
+            if ahb > 0:
+                if inside_flag == 2:
+                    count = emit_unique(target, count, bx, by, capacity)
+                    if count < 0:
+                        return -1
+                b = 0 if b + 1 == cutter_count else b + 1
+                ba += 1
+            else:
+                if inside_flag == 1:
+                    count = emit_unique(target, count, ax, ay, capacity)
+                    if count < 0:
+                        return -1
+                a = 0 if a + 1 == subject_count else a + 1
+                aa += 1
+
+    if inside_flag != 0:
+        return count
+    var subject_first = oriented_index(0, subject_count, subject_ccw)
+    if point_in_convex_f64(
+        cutter,
+        cutter_count,
+        cutter_ccw,
+        subject[2 * subject_first],
+        subject[2 * subject_first + 1],
+    ):
+        for i in range(subject_count):
+            var index = oriented_index(i, subject_count, subject_ccw)
+            emit_point(target, i, subject[2 * index], subject[2 * index + 1])
+        return subject_count
+    var cutter_first = oriented_index(0, cutter_count, cutter_ccw)
+    if point_in_convex_f64(
+        subject,
+        subject_count,
+        subject_ccw,
+        cutter[2 * cutter_first],
+        cutter[2 * cutter_first + 1],
+    ):
+        for i in range(cutter_count):
+            var index = oriented_index(i, cutter_count, cutter_ccw)
+            emit_point(target, i, cutter[2 * index], cutter[2 * index + 1])
+        return cutter_count
+    return 0
+
+
 def intersect_convex(
     subject: FPtr,
     subject_count: Int,
@@ -188,6 +347,12 @@ def intersect_convex(
 ) -> Int:
     if subject_count < 3 or cutter_count < 3:
         return 0
+    if subject_count >= 64 and cutter_count >= 64:
+        var linear_count = intersect_convex_linear(
+            subject, subject_count, cutter, cutter_count, target, capacity
+        )
+        if linear_count != -2:
+            return linear_count
     var source = subject
     var destination = target
     var count = subject_count

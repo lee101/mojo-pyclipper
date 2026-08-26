@@ -6,6 +6,7 @@ import pytest
 
 import mojo_pyclipper as mpc
 from mojo_pyclipper._lib import addr
+from mojo_pyclipper.core import _path_array
 
 
 SQUARE = [(0, 0), (100, 0), (100, 100), (0, 100)]
@@ -140,6 +141,17 @@ def test_ffi_address_rejects_wrong_layout_dtype_and_empty_buffers():
         addr(array, np.int64, writable=True)
 
 
+def test_contiguous_int64_paths_stay_zero_copy():
+    path = np.asarray(SQUARE, dtype=np.int64)
+    assert _path_array(path) is path
+
+
+@pytest.mark.parametrize("path", [[(1, 2, 3)], [(1, 2), (3,)], [(1.0, 2)]])
+def test_list_path_conversion_rejects_malformed_points(path):
+    with pytest.raises(TypeError):
+        mpc.Area(path)
+
+
 def test_reverse_helpers_match_upstream():
     paths = [SQUARE, CLIP]
     assert mpc.ReversePath(SQUARE) == reference.ReversePath(SQUARE)
@@ -190,6 +202,38 @@ def test_rectangle_intersection_vertices_match_upstream():
     assert canonical(execute(mpc, mpc.CT_INTERSECTION)[0]) == canonical(
         execute(reference, reference.CT_INTERSECTION)[0]
     )
+
+
+@pytest.mark.parametrize("vertices", [63, 64, 65, 127])
+def test_linear_intersection_threshold_matches_upstream(vertices):
+    subject = regular_polygon(vertices, 100_000, (0, 0), 0.031)
+    clip = regular_polygon(131, 83_000, (17_000, -9_000), 0.073)
+    got = execute(mpc, mpc.CT_INTERSECTION, subject, clip)
+    expected = execute(reference, reference.CT_INTERSECTION, subject, clip)
+    assert total_area(got, mpc) == total_area(expected, reference)
+
+
+@pytest.mark.parametrize("reverse_subject,reverse_clip", [(False, False), (True, False), (False, True), (True, True)])
+def test_linear_intersection_handles_reversed_winding(reverse_subject, reverse_clip):
+    subject = regular_polygon(97, 100_000, (0, 0), 0.021)
+    clip = regular_polygon(101, 79_000, (21_000, -11_000), 0.067)
+    if reverse_subject:
+        subject.reverse()
+    if reverse_clip:
+        clip.reverse()
+    got = execute(mpc, mpc.CT_INTERSECTION, subject, clip)
+    expected = execute(reference, reference.CT_INTERSECTION, subject, clip)
+    assert total_area(got, mpc) == total_area(expected, reference)
+
+
+def test_linear_intersection_contained_and_disjoint_cases():
+    outer = regular_polygon(128, 100_000, phase=0.013)
+    inner = regular_polygon(65, 20_000, (3_000, -2_000), 0.041)
+    distant = regular_polygon(65, 20_000, (300_000, 0), 0.041)
+    for clip in (inner, distant):
+        got = execute(mpc, mpc.CT_INTERSECTION, outer, clip)
+        expected = execute(reference, reference.CT_INTERSECTION, outer, clip)
+        assert total_area(got, mpc) == total_area(expected, reference)
 
 
 @pytest.mark.parametrize(
@@ -398,7 +442,7 @@ def test_multiple_disjoint_offsets_match_upstream_area():
 
 
 @pytest.mark.parametrize("vertices", [32_767, 262_147])
-def test_offset_parallel_threshold_matches_upstream(vertices):
+def test_large_offset_matches_upstream(vertices):
     polygon = regular_polygon(vertices, 1_000_000_000_000, phase=0.003)
     got = offset(mpc, polygon, mpc.JT_MITER, 10_000)
     expected = offset(reference, polygon, reference.JT_MITER, 10_000)

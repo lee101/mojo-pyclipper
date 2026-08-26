@@ -11,7 +11,7 @@ from typing import Iterable, Sequence
 
 import numpy as np
 
-from ._lib import addr, ensure_parallel_runtime, lib
+from ._lib import addr, lib
 
 CT_INTERSECTION = 0
 CT_UNION = 1
@@ -91,22 +91,17 @@ def _path_array(path: Sequence[Sequence[Integral]], minimum: int = 0) -> np.ndar
                 raise ClipperException(f"path must contain at least {minimum} vertices")
             return np.empty((0, 2), dtype=np.int64)
         try:
-            if set(map(len, path)) != {2}:
-                raise TypeError("path must be an iterable of (x, y) integer points")
-        except TypeError as error:
-            raise TypeError(
-                "path must be an iterable of (x, y) integer points"
-            ) from error
-        try:
-            points = np.fromiter(
+            flat = np.fromiter(
                 map(operator.index, itertools.chain.from_iterable(path)),
                 dtype=np.int64,
-                count=2 * len(path),
-            ).reshape(-1, 2)
+            )
         except TypeError as error:
             raise TypeError("coordinates must be integer pairs") from error
         except (ValueError, OverflowError) as error:
             raise OverflowError("coordinates must lie within Clipper's 62-bit range") from error
+        if flat.size != 2 * len(path):
+            raise TypeError("path must be an iterable of (x, y) integer points")
+        points = flat.reshape(-1, 2)
     else:
         try:
             points = np.asarray(path)
@@ -323,13 +318,20 @@ def _clip_plane(poly: np.ndarray, edge_start, edge_end, orientation: float, insi
     return np.ascontiguousarray(target[:count])
 
 
-def _intersection(poly: np.ndarray, cutter: np.ndarray) -> np.ndarray:
+def _intersection(
+    poly: np.ndarray,
+    cutter: np.ndarray,
+    target: np.ndarray | None = None,
+    scratch: np.ndarray | None = None,
+) -> np.ndarray:
     subject = _float_path(poly)
     cutter_float = _float_path(cutter)
     orientation = 1.0 if _signed_area_float(cutter_float) > 0 else -1.0
     capacity = len(subject) + len(cutter_float) + 2
-    target = np.empty((capacity, 2), dtype=np.float64)
-    scratch = np.empty_like(target)
+    if target is None or len(target) < capacity:
+        target = np.empty((capacity, 2), dtype=np.float64)
+    if scratch is None or len(scratch) < capacity:
+        scratch = np.empty((capacity, 2), dtype=np.float64)
     count = lib().mpc_intersection(
         addr(subject, np.float64),
         len(subject),
@@ -378,9 +380,9 @@ def _union(polys: Iterable[np.ndarray]) -> list[np.ndarray]:
 
 def _filled(paths: list[np.ndarray], fill_type: int) -> list[np.ndarray]:
     if fill_type == PFT_POSITIVE:
-        return [path for path in paths if Area(path.tolist()) > 0]
+        return [path for path in paths if _signed_area_float(path) > 0]
     if fill_type == PFT_NEGATIVE:
-        return [path for path in paths if Area(path.tolist()) < 0]
+        return [path for path in paths if _signed_area_float(path) < 0]
     return list(paths)
 
 
@@ -516,6 +518,8 @@ class Pyclipper:
         self._preserve_collinear = False
         self.ReverseSolution = False
         self._strictly_simple = False
+        self._intersection_target = None
+        self._intersection_scratch = None
 
     @property
     def PreserveCollinear(self):
@@ -545,10 +549,11 @@ class Pyclipper:
             raise NotImplementedError("clipping coordinates must not exceed 2**52")
         if not _is_convex(points):
             raise NotImplementedError("only simple convex paths are supported")
+        native_points = _float_path(points)
         if poly_type == PT_SUBJECT:
-            self._subject.append(points)
+            self._subject.append(native_points)
         elif poly_type == PT_CLIP:
-            self._clip.append(points)
+            self._clip.append(native_points)
         else:
             raise ClipperException("invalid polygon type")
         return True
@@ -587,11 +592,25 @@ class Pyclipper:
         _require_disjoint(subject_paths)
         _require_disjoint(clip_paths)
         if clip_type == CT_INTERSECTION:
-            raw = _union(
-                _intersection(subject, clip)
-                for subject in subject_paths
-                for clip in clip_paths
-            )
+            if len(subject_paths) == 1 and len(clip_paths) == 1:
+                capacity = len(subject_paths[0]) + len(clip_paths[0]) + 2
+                if self._intersection_target is None or len(self._intersection_target) < capacity:
+                    self._intersection_target = np.empty((capacity, 2), dtype=np.float64)
+                    self._intersection_scratch = np.empty_like(self._intersection_target)
+                raw = [
+                    _intersection(
+                        subject_paths[0],
+                        clip_paths[0],
+                        self._intersection_target,
+                        self._intersection_scratch,
+                    )
+                ]
+            else:
+                raw = _union(
+                    _intersection(subject, clip)
+                    for subject in subject_paths
+                    for clip in clip_paths
+                )
         elif clip_type == CT_DIFFERENCE:
             raw = [
                 piece
@@ -633,7 +652,7 @@ class PyclipperOffset:
             raise NotImplementedError("offset coordinates must not exceed 2**52")
         if not _is_convex(points):
             raise NotImplementedError("only simple convex paths are supported")
-        self._paths.append((points, join_type))
+        self._paths.append((_float_path(points), join_type))
 
     def AddPaths(self, paths, join_type, end_type):
         for path in paths:
@@ -659,8 +678,6 @@ class PyclipperOffset:
             circle_steps = max(4, int(np.ceil(2 * np.pi / max(step, 1e-6))))
             capacity = len(points) * (circle_steps + 4)
             target = np.empty((capacity, 2), dtype=np.float64)
-            if len(points) >= 262_144:
-                ensure_parallel_runtime()
             count = lib().mpc_offset_polygon(
                 addr(points, np.float64),
                 addr(normals, np.float64, writable=True),

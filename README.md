@@ -96,21 +96,29 @@ Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz; Linux x86_64; Python 3.13.14
 
 | Case | mojo-pyclipper | pyclipper | Result |
 |---|---:|---:|---:|
-| Area, 250k vertices | 38.812 ms | 17.216 ms | 2.25x slower |
-| PointInPolygon, 25k points x 256 vertices | 41.890 ms | 200.947 ms | 4.80x faster |
-| Convex intersection, 1k x 1k vertices | 3.938 ms | 0.284 ms | 13.86x slower |
-| Miter offset, 100k vertices | 36.229 ms | 49.660 ms | 1.37x faster |
-| Square offset, 100k vertices | 52.152 ms | 73.743 ms | 1.41x faster |
+| Area, 250k vertices | 37.375 ms | 15.061 ms | 2.48x slower |
+| PointInPolygon, 25k points x 256 vertices | 28.022 ms | 190.285 ms | 6.79x faster |
+| Convex intersection, 1k x 1k vertices | 0.399 ms | 0.333 ms | 1.20x slower |
+| Miter offset, 100k vertices | 34.863 ms | 49.719 ms | 1.43x faster |
+| Square offset, 100k vertices | 50.241 ms | 71.445 ms | 1.42x faster |
 
 The vectorized point-query case wins because one FFI call replaces 25,000
-Python-to-C calls. SIMD normal construction and lower cleanup overhead put both
-offset cases ahead of pyclipper. Area still spends most of its public-call time
-validating and converting the Python list; an already-contiguous NumPy input
-crosses the FFI boundary without a copy. Convex intersection now uses one FFI
-call and two reusable buffers, but its Sutherland-Hodgman kernel remains
-quadratic in the two vertex counts and trails Clipper's scanline implementation.
+Python-to-C calls. SIMD normal construction and cached native-ready input
+buffers put both offset cases ahead of pyclipper. Area still spends most of its
+public-call time validating and converting the Python list; its native SIMD
+reduction takes less than a millisecond, and an already-contiguous NumPy input
+crosses the FFI boundary without a copy. Convex intersection uses a linear
+edge-merge kernel above 64 vertices per input, with Sutherland-Hodgman retained
+as a conservative fallback for collinear-edge cases.
 
-No GPU path is included.
+No GPU path is included. Area, point classification, and linear intersection
+perform less than one floating-point operation per byte moved, while offset
+construction is a branch-heavy single pass whose host/device transfers would
+dominate its square roots and divisions. None clears the roughly two-flop-per-byte
+threshold needed to justify a GPU allocation and launch. No CPU parallel path is
+included either: this pinned Mojo nightly does not export its documented
+`parallelize` primitive, and the remaining large independent normal pass is
+already a small fraction of the faster-than-upstream offset calls.
 
 ## How it works
 
@@ -120,11 +128,12 @@ cross the C ABI as integer addresses; exported Mojo functions reconstruct
 concrete mutable pointers and write into NumPy-owned output and scratch arrays.
 No allocator or ownership crosses the ABI.
 
-Intersection clips a subject against each oriented half-plane of a convex clip
-path inside one Mojo call, alternating between two NumPy-owned work buffers.
-Difference keeps each rejected half-plane piece, and union/XOR compose those
-convex pieces without overlap. Offsetting computes normalized outward edge
-normals with SIMD and uses thresholded CPU parallelism above 262,144 vertices,
-then constructs miter, square, or tolerance-bounded round joins. The Python
-layer handles pyclipper-compatible object state, validation, integer rounding,
-result cleanup, and convex partition assembly.
+Large intersections merge the two counterclockwise edge streams in linear time,
+normalizing winding by indexed traversal without copying either input. Small or
+collinear-edge cases clip against oriented half-planes with the original
+Sutherland-Hodgman kernel. A `Pyclipper` instance reuses its two NumPy-owned work
+buffers. Difference keeps each rejected half-plane piece, and union/XOR compose
+those convex pieces without overlap. Offsetting computes normalized outward edge
+normals with SIMD, then constructs miter, square, or tolerance-bounded round
+joins. The Python layer handles pyclipper-compatible object state, validation,
+integer rounding, result cleanup, and convex partition assembly.

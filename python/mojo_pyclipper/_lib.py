@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import atexit
 import ctypes
 import os
 import shutil
@@ -54,34 +53,6 @@ def _build() -> str:
 
 
 _LIBRARY: ctypes.CDLL | None = None
-_RUNTIME: ctypes.CDLL | None = None
-_CPU_DEVICE: int | None = None
-
-
-def _release_cpu_device() -> None:
-    global _CPU_DEVICE
-    if _RUNTIME is not None and _CPU_DEVICE is not None:
-        _RUNTIME.KGEN_CompilerRT_AsyncRT_ReleaseCPUDevice(
-            ctypes.c_void_p(_CPU_DEVICE)
-        )
-        _CPU_DEVICE = None
-
-
-def ensure_parallel_runtime() -> None:
-    global _RUNTIME, _CPU_DEVICE
-    if _RUNTIME is not None:
-        return
-    _RUNTIME = ctypes.CDLL("libKGENCompilerRTShared.so")
-    create = _RUNTIME.KGEN_CompilerRT_AsyncRT_GetOrCreateCPUDevice
-    create.argtypes = []
-    create.restype = ctypes.c_void_p
-    release = _RUNTIME.KGEN_CompilerRT_AsyncRT_ReleaseCPUDevice
-    release.argtypes = [ctypes.c_void_p]
-    release.restype = None
-    _CPU_DEVICE = create()
-    if _CPU_DEVICE is None:
-        raise BuildError("could not initialize the Mojo CPU runtime")
-    atexit.register(_release_cpu_device)
 
 
 def lib() -> ctypes.CDLL:
