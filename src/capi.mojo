@@ -1,6 +1,5 @@
 """Integer polygon kernels exported through a small C ABI."""
 
-from std.algorithm import parallelize
 from std.math import acos, cos, sin, sqrt
 from std.sys import simd_width_of as simdwidthof
 
@@ -231,7 +230,6 @@ def unit_outward_normal(points: FPtr, i: Int, n: Int, orientation: Float64, dst:
 def outward_normals(points: FPtr, normals: FPtr, n: Int, orientation: Float64):
     comptime W = simdwidthof[DType.float64]()
     comptime POINTS_PER_VECTOR = W // 2
-    comptime PARALLEL_THRESHOLD = 262144
     var vector_count = (n - 1) // POINTS_PER_VECTOR
 
     @parameter
@@ -247,11 +245,8 @@ def outward_normals(points: FPtr, normals: FPtr, n: Int, orientation: Float64):
             offset, delta.shuffle[1, 0, 3, 2]() * signs / lengths
         )
 
-    if n >= PARALLEL_THRESHOLD:
-        parallelize[compute](vector_count)
-    else:
-        for chunk in range(vector_count):
-            compute(chunk)
+    for chunk in range(vector_count):
+        compute(chunk)
     for i in range(vector_count * POINTS_PER_VECTOR, n):
         unit_outward_normal(points, i, n, orientation, normals)
 
