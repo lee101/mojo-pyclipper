@@ -24,8 +24,8 @@ def signed_area_i64(points: IPtr, n: Int) -> Float64:
     var signs = SIMD[DType.float64, W](1.0, -1.0, 1.0, -1.0)
     var i = 0
     while i + POINTS_PER_VECTOR < n:
-        var current = SIMD[DType.float64, W](points.load[width=W](2 * i))
-        var following = SIMD[DType.float64, W](points.load[width=W](2 * i + 2))
+        var current = SIMD[DType.float64, W](points.unsafe_load[width=W](2 * i))
+        var following = SIMD[DType.float64, W](points.unsafe_load[width=W](2 * i + 2))
         acc += (current * following.shuffle[1, 0, 3, 2]() * signs).reduce_add()
         i += POINTS_PER_VECTOR
     while i + 1 < n:
@@ -46,8 +46,8 @@ def signed_area_f64(points: FPtr, n: Int) -> Float64:
     var signs = SIMD[DType.float64, W](1.0, -1.0, 1.0, -1.0)
     var i = 0
     while i + POINTS_PER_VECTOR < n:
-        var current = points.load[width=W](2 * i)
-        var following = points.load[width=W](2 * i + 2)
+        var current = points.unsafe_load[width=W](2 * i)
+        var following = points.unsafe_load[width=W](2 * i + 2)
         acc += (current * following.shuffle[1, 0, 3, 2]() * signs).reduce_add()
         i += POINTS_PER_VECTOR
     while i + 1 < n:
@@ -169,7 +169,7 @@ def copy_f64(src: FPtr, dst: FPtr, count: Int):
     comptime W = simdwidthof[DType.float64]()
     var i = 0
     while i + W <= count:
-        dst.store(i, src.load[width=W](i))
+        dst.store(i, src.unsafe_load[width=W](i))
         i += W
     while i < count:
         dst[i] = src[i]
@@ -400,7 +400,7 @@ def outward_normals(points: FPtr, normals: FPtr, n: Int, orientation: Float64):
     @parameter
     def compute(chunk: Int):
         var offset = W * chunk
-        var delta = points.load[width=W](offset + 2) - points.load[width=W](offset)
+        var delta = points.unsafe_load[width=W](offset + 2) - points.unsafe_load[width=W](offset)
         var squared = delta * delta
         var lengths = sqrt(squared + squared.shuffle[1, 0, 3, 2]())
         var signs = SIMD[DType.float64, W](
